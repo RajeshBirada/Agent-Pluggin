@@ -1,8 +1,8 @@
 RajeshBirada
 
-# Stock Research FastAPI Application
+# Stock Research FastAPI Application with Multi-Step LLM Tool Calling
 
-A FastAPI application that performs multi-step research to analyze stock price movements and correlate them with news events using Google's Gemini LLM.
+A FastAPI application that performs multi-step research to analyze stock price movements and correlate them with news events using Google's Gemini LLM. This implementation follows the iterative pattern demonstrated in Session3.ipynb, with explicit LLM query→response→tool call→result cycles.
 
 ## Features
 
@@ -11,7 +11,25 @@ A FastAPI application that performs multi-step research to analyze stock price m
 - Retrieve relevant news articles about a stock
 - Correlate news events with stock price movements
 - Generate comprehensive research reports
-- Use Google's Gemini LLM for intelligent analysis
+- Uses Google's Gemini LLM in a step-by-step agent workflow
+
+## Multi-Step LLM Tool Calling
+
+This application demonstrates a clear iteration-based approach to LLM tool calling similar to the one in Session3.ipynb:
+
+1. **Initial Query** → The process starts with a query about a stock
+2. **LLM Response** → The LLM determines the next function to call (e.g., `analyze_price_data`)
+3. **Function Call** → The system executes the function with the provided parameters
+4. **Function Result** → The result is returned to the LLM
+5. **Next Iteration** → The LLM receives the result and determines the next step
+6. **Final Analysis** → After multiple iterations, the LLM provides the comprehensive analysis
+
+This creates a chain of:
+```
+Query → LLM Response → Function Call → Function Result → Query → LLM Response → Function Call → Function Result → ... → Final Analysis
+```
+
+Each iteration is tracked and displayed during processing, mimicking the approach shown in Session3.ipynb.
 
 ## Requirements
 
@@ -57,41 +75,66 @@ python -m app.client
 
 ## API Endpoints
 
-- `POST /api/stock-research/research`: Perform comprehensive research on a stock
+- `POST /api/stock-research/research`: Perform comprehensive research on a stock using multi-step LLM tool calling
 - `GET /api/stock-research/stock-data/{ticker}`: Get stock data for a ticker
 - `GET /api/stock-research/news/{ticker}`: Get news articles for a stock
-- `GET /api/stock-research/correlation/{ticker}`: Analyze correlation between news and stock price changes
+- `GET /api/stock-research/correlation/{ticker}`: Analyze correlation between news and stock price changes using the agent-based approach
 
 ## How It Works
 
-This application uses a multi-step approach:
+This application uses a multi-step approach without any agentic framework:
 
-1. Fetch stock data using yfinance
-2. Analyze price fluctuations 
-3. Retrieve relevant news using NewsAPI
-4. Query Google's Gemini LLM to correlate news with price changes
-5. Generate a comprehensive research report
+1. **Data Collection**: Fetch stock data using yfinance and news using NewsAPI
+2. **Agent Initialization**: Set up the StockAnalysisAgent with system prompt and initial query
+3. **First Iteration**: LLM analyzes the query and calls `analyze_price_data`
+4. **Second Iteration**: LLM processes the result and calls `analyze_news_sentiment`
+5. **Third Iteration**: LLM examines both results and calls `correlate_news_and_price`
+6. **Fourth Iteration**: LLM reviews correlation data and calls `generate_investment_insight`
+7. **Final Iteration**: LLM produces the FINAL_ANALYSIS based on all previous results
 
-The application uses LLM multiple times in the workflow:
-- To analyze correlation between news and price movements
-- To generate the final comprehensive report
+The StockAnalysisAgent class orchestrates this workflow by:
+- Tracking each iteration's request and response
+- Executing function calls based on LLM decisions
+- Providing context from previous iterations to the LLM
+- Detecting when the process has reached completion
 
-## Example
+## Example Code
 
 ```python
-import httpx
-import asyncio
-
-async def main():
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "http://localhost:8000/api/stock-research/research",
-            json={"ticker": "AAPL", "period": "1wk"}
-        )
-        result = response.json()
-        print(result["comprehensive_report"])
-
-asyncio.run(main())
+# Example of using the StockAnalysisAgent
+async def analyze_stock_correlation(ticker, stock_data, news_articles):
+    # Set up the agent
+    agent = StockAnalysisAgent(max_iterations=4)
+    
+    # Define the system prompt
+    system_prompt = """You are a financial analyst agent. Respond with EXACTLY ONE of these formats:
+1. FUNCTION_CALL: analyze_price_data|{stock_data}
+2. FUNCTION_CALL: analyze_news_sentiment|{news_data}
+3. FUNCTION_CALL: correlate_news_and_price|{combined_data}
+4. FUNCTION_CALL: generate_investment_insight|{correlation_data}
+5. FINAL_ANALYSIS: [Your comprehensive analysis of the stock]"""
+    
+    agent.set_system_prompt(system_prompt)
+    
+    # Set the initial query
+    initial_query = f"I need to analyze the correlation between news events and stock price movements for {ticker}."
+    agent.set_initial_query(initial_query)
+    
+    # Define function map and run until completion
+    function_map = {
+        "analyze_price_data": analyze_price_data,
+        "analyze_news_sentiment": analyze_news_sentiment,
+        "correlate_news_and_price": correlate_news_and_price,
+        "generate_investment_insight": generate_investment_insight
+    }
+    
+    # Run the agent until it reaches a FINAL_ANALYSIS
+    result = await agent.run_until_completion(
+        function_map=function_map,
+        completion_marker="FINAL_ANALYSIS"
+    )
+    
+    return result
 ```
 
 ## License

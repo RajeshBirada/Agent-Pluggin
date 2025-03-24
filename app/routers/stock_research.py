@@ -1,11 +1,19 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
+import json
 import asyncio
 
 from app.services.stock_service import get_stock_data, analyze_fluctuations
 from app.services.news_service import get_news_for_stock, extract_key_news_points
 from app.services.correlation_service import correlate_news_with_price_changes, generate_comprehensive_report
+from app.services.stock_functions import (
+    analyze_price_data, 
+    analyze_news_sentiment, 
+    correlate_news_and_price, 
+    generate_investment_insight
+)
+from app.utils.llm import StockAnalysisAgent, query_llm
 
 router = APIRouter(
     prefix="/api/stock-research",
@@ -37,26 +45,72 @@ async def research_stock(request: ResearchRequest):
         if not stock_data:
             raise HTTPException(status_code=404, detail=f"Stock data not found for ticker {request.ticker}")
         
-        # Step 2: Analyze stock price fluctuations
-        fluctuation_analysis = await analyze_fluctuations(stock_data)
-        
-        # Step 3: Get news articles for the stock
+        # Step 2: Get news articles for the stock
         news_articles = await get_news_for_stock(stock_data['name'], request.ticker, days=7)
         
-        # Step 4: Extract key points from news
+        # Step 3: Set up the agent for correlation analysis
+        agent = StockAnalysisAgent(max_iterations=4)
+        
+        # Define the system prompt
+        system_prompt = """You are a financial analyst agent. Respond with EXACTLY ONE of these formats:
+1. FUNCTION_CALL: analyze_price_data|{stock_data}
+2. FUNCTION_CALL: analyze_news_sentiment|{news_data}
+3. FUNCTION_CALL: correlate_news_and_price|{combined_data}
+4. FUNCTION_CALL: generate_investment_insight|{correlation_data}
+5. FINAL_ANALYSIS: [Your comprehensive analysis of the stock]
+
+DO NOT include multiple responses. Give ONE response at a time."""
+        
+        agent.set_system_prompt(system_prompt)
+        
+        # Set the initial query
+        initial_query = f"""I need to analyze the correlation between news events and stock price movements for {stock_data['name']} ({request.ticker}) over the past week.
+I should analyze the stock price data first, then the news sentiment, then correlate them, and finally generate investment insights."""
+        
+        agent.set_initial_query(initial_query)
+        
+        # Define function map
+        function_map = {
+            "analyze_price_data": lambda params: analyze_price_data(params if isinstance(params, str) else json.dumps(stock_data)),
+            "analyze_news_sentiment": lambda params: analyze_news_sentiment(params if isinstance(params, str) else json.dumps(news_articles)),
+            "correlate_news_and_price": correlate_news_and_price,
+            "generate_investment_insight": generate_investment_insight
+        }
+        
+        # Run the agent until completion
+        correlation_analysis = await agent.run_until_completion(
+            function_map=function_map,
+            completion_marker="FINAL_ANALYSIS"
+        )
+        
+        # Generate the comprehensive report
+        system_prompt = """You are an investment research report writer creating a final report.
+Based on all the previous analysis steps, create a comprehensive research report with these sections:
+1. Executive Summary
+2. Stock Price Analysis
+3. News Summary
+4. News-Price Correlation Analysis
+5. Investment Strategy Recommendations
+6. Conclusion"""
+        
+        # Prepare input for the report
+        fluctuation_analysis = await analyze_fluctuations(stock_data)
         news_summary = await extract_key_news_points(news_articles)
         
-        # Step 5: Analyze correlation between news and price changes
-        correlation_analysis = await correlate_news_with_price_changes(stock_data, news_articles)
+        final_prompt = f"""Create a comprehensive research report for {stock_data['name']} ({request.ticker}) with the following information:
+
+STOCK PRICE FLUCTUATION ANALYSIS:
+{fluctuation_analysis}
+
+NEWS SUMMARY:
+{news_summary}
+
+CORRELATION ANALYSIS:
+{correlation_analysis}
+
+Format your response as a professional investment research report with clear sections and actionable insights."""
         
-        # Step 6: Generate comprehensive report
-        comprehensive_report = await generate_comprehensive_report(
-            request.ticker,
-            stock_data,
-            fluctuation_analysis,
-            news_summary,
-            correlation_analysis
-        )
+        comprehensive_report = await query_llm(final_prompt)
         
         # Return the complete analysis
         return ResearchResponse(
@@ -126,7 +180,7 @@ async def get_correlation_endpoint(
     period: str = Query("1wk", description="Time period for stock data (e.g., 1d, 1wk, 1mo)")
 ):
     """
-    Analyze correlation between news and stock price changes
+    Analyze correlation between news and stock price changes using agent-based approach
     """
     try:
         # Get stock data
@@ -137,8 +191,39 @@ async def get_correlation_endpoint(
         # Get news articles
         news_articles = await get_news_for_stock(stock_data['name'], ticker, days=7)
         
-        # Analyze correlation
-        correlation_analysis = await correlate_news_with_price_changes(stock_data, news_articles)
+        # Set up the agent for correlation analysis
+        agent = StockAnalysisAgent(max_iterations=4)
+        
+        # Define the system prompt
+        system_prompt = """You are a financial analyst agent. Respond with EXACTLY ONE of these formats:
+1. FUNCTION_CALL: analyze_price_data|{stock_data}
+2. FUNCTION_CALL: analyze_news_sentiment|{news_data}
+3. FUNCTION_CALL: correlate_news_and_price|{combined_data}
+4. FUNCTION_CALL: generate_investment_insight|{correlation_data}
+5. FINAL_ANALYSIS: [Your comprehensive analysis of the stock]
+
+DO NOT include multiple responses. Give ONE response at a time."""
+        
+        agent.set_system_prompt(system_prompt)
+        
+        # Set the initial query
+        initial_query = f"""I need to analyze the correlation between news events and stock price movements for {stock_data['name']} ({ticker})."""
+        
+        agent.set_initial_query(initial_query)
+        
+        # Define function map
+        function_map = {
+            "analyze_price_data": lambda params: analyze_price_data(params if isinstance(params, str) else json.dumps(stock_data)),
+            "analyze_news_sentiment": lambda params: analyze_news_sentiment(params if isinstance(params, str) else json.dumps(news_articles)),
+            "correlate_news_and_price": correlate_news_and_price,
+            "generate_investment_insight": generate_investment_insight
+        }
+        
+        # Run the agent until completion
+        correlation_analysis = await agent.run_until_completion(
+            function_map=function_map, 
+            completion_marker="FINAL_ANALYSIS"
+        )
         
         return {
             "ticker": ticker,
